@@ -20,20 +20,20 @@
 import Foundation
 
 #if canImport(FoundationNetworking)
-    import FoundationNetworking
+import FoundationNetworking
 #endif
 
 final class URLSessionHTTPClientAdapter: HTTPClient {
-
+    
     private let urlSession: URLSession
-
+    
     init(urlSession: URLSession) {
         self.urlSession = urlSession
     }
-
+    
     func perform(request: HTTPRequest) async throws -> HTTPResponse {
         let urlRequest = Self.urlRequest(from: request)
-
+        
         let data: Data
         let response: URLResponse
         do {
@@ -41,15 +41,15 @@ final class URLSessionHTTPClientAdapter: HTTPClient {
         } catch let error {
             throw error
         }
-
+        
         let httpResponse = Self.httpResponse(from: data, response: response)
         return httpResponse
     }
-
+    
 }
 
 extension URLSessionHTTPClientAdapter {
-
+    
     private static func urlRequest(from httpRequest: HTTPRequest) -> URLRequest {
         var urlRequest = URLRequest(url: httpRequest.url)
         urlRequest.httpMethod = httpRequest.method.rawValue
@@ -57,47 +57,62 @@ extension URLSessionHTTPClientAdapter {
         for header in httpRequest.headers {
             urlRequest.addValue(header.value, forHTTPHeaderField: header.key)
         }
-
+        urlRequest.timeoutInterval = 3
         return urlRequest
     }
-
+    
     private static func httpResponse(from data: Data, response: URLResponse) -> HTTPResponse {
         guard let httpURLResponse = response as? HTTPURLResponse else {
             return HTTPResponse(statusCode: -1, data: nil)
         }
-
+        
         let statusCode = httpURLResponse.statusCode
         return HTTPResponse(statusCode: statusCode, data: data)
     }
-
+    
 }
 
 extension URLSessionHTTPClientAdapter {
-
-    #if canImport(FoundationNetworking)
-        private func perform(_ urlRequest: URLRequest) async throws -> (Data, URLResponse) {
-            try await withCheckedThrowingContinuation { continuation in
-                urlSession.dataTask(with: urlRequest) { data, response, error in
-                    if let error {
-                        continuation.resume(throwing: error)
-                        return
-                    }
-
-                    guard let data, let response else {
-                        continuation.resume(
-                            throwing: NSError(domain: "uk.co.adam-young.TMDb", code: -1))
-                        return
-                    }
-
-                    continuation.resume(returning: (data, response))
+    
+#if canImport(FoundationNetworking)
+    private func perform(_ urlRequest: URLRequest) async throws -> (Data, URLResponse) {
+        try await withCheckedThrowingContinuation { continuation in
+            urlSession.dataTask(with: urlRequest) { data, response, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
                 }
-                .resume()
+                
+                guard let data, let response else {
+                    continuation.resume(
+                        throwing: NSError(domain: "uk.co.adam-young.TMDb", code: -1))
+                    return
+                }
+                
+                continuation.resume(returning: (data, response))
             }
+            .resume()
         }
-    #else
-        private func perform(_ urlRequest: URLRequest) async throws -> (Data, URLResponse) {
-            try await urlSession.data(for: urlRequest)
+    }
+#else
+    private func perform(_ urlRequest: URLRequest) async throws -> (Data, URLResponse) {
+        try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
+            // 添加请求任务
+            group.addTask {
+                try await self.urlSession.data(for: urlRequest)
+            }
+            
+            // 添加超时任务
+            group.addTask {
+                try await Task.sleep(nanoseconds: 3 * 1_000_000_000)
+                throw URLError(.timedOut)
+            }
+            
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
         }
-    #endif
-
+    }
+#endif
+    
 }
